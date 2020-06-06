@@ -1,4 +1,4 @@
-#![deny(warnings)]
+// #![deny(warnings)]
 #![no_main]
 #![no_std]
 
@@ -24,24 +24,22 @@ pub static SystemCoreClock: u32 = 16_000_000; //or use stm32f4xx_hal rcc::HSI
 
 
 
-
-use p_hal::rcc::Clocks;
-
 use p_hal::gpio::GpioExt;
 use p_hal::rcc::RccExt;
 
 use core::ops::{DerefMut};
+use core::sync::atomic::{AtomicU32, Ordering};
 
 use p_hal::{prelude::*, stm32};
 use core::ptr::{null, null_mut};
-use cmsis_rtos2::{ osMessageQueueId_t};
+use cmsis_rtos2::{ osMessageQueueId_t, osThreadAttr_t, osPriority_t_osPriorityLow};
 
 
 type GpioTypeUserLed1 =  p_hal::gpio::gpioc::PC13<p_hal::gpio::Output<p_hal::gpio::PushPull>>;
 
-static APP_CLOCKS:  Mutex<RefCell< Option< Clocks >>> = Mutex::new(RefCell::new(None));
 static USER_LED_1:  Mutex<RefCell<Option< GpioTypeUserLed1>>> = Mutex::new(RefCell::new(None));
 static mut GLOBAL_QUEUE_HANDLE: Option< osMessageQueueId_t  > = None;
+static UPDATE_COUNT: AtomicU32 = AtomicU32::new(0);
 
 // lazy_static {}
 //   static ref GLOBAL_QUEUE_HANDLE: AtomicPtr<osMessageQueueId_t> = AtomicPtr::default();
@@ -53,8 +51,17 @@ static mut GLOBAL_QUEUE_HANDLE: Option< osMessageQueueId_t  > = None;
 // cortex-m-rt calls this for serious faults.  can set a breakpoint to debug
 #[exception]
 fn HardFault(_ef: &ExceptionFrame) -> ! {
+  rprintln!("HardFault");
   loop {
+    cortex_m::asm::bkpt();
+  }
+}
 
+#[exception]
+fn DefaultHandler(val: i16) -> ! {
+  rprintln!("DefaultHandler {}", val);
+  loop {
+    //cortex_m::asm::bkpt();
   }
 }
 
@@ -80,13 +87,17 @@ extern "C" fn task1_cb(_arg: *mut cty::c_void) {
   let mq_id:osMessageQueueId_t = unsafe { GLOBAL_QUEUE_HANDLE.unwrap() } ;
   let mut send_buf: [u8; 10] = [0; 10];
   loop {
-    cmsis_rtos2::rtos_os_msg_queue_put(
+    let rc = cmsis_rtos2::rtos_os_msg_queue_put(
       mq_id as osMessageQueueId_t,
       send_buf.as_ptr() as *const cty::c_void,
       1,
       250);
 
-    send_buf[0] = (send_buf[0] + 1) % 255;
+    if 0 != rc {
+      rprintln!("qput failed: {}", rc);
+    }
+    send_buf[0] =  send_buf[0].wrapping_add(1);
+    cmsis_rtos2::rtos_os_thread_yield();
   }
 
 }
@@ -94,22 +105,38 @@ extern "C" fn task1_cb(_arg: *mut cty::c_void) {
 /// RTOS calls this function to run Task 2
 #[no_mangle]
 extern "C" fn task2_cb(_arg: *mut cty::c_void) {
-  let mq_id:osMessageQueueId_t = unsafe { GLOBAL_QUEUE_HANDLE.unwrap() } ;
   let mut recv_buf: [u8; 10] = [0; 10];
 
   loop {
-    let rc = cmsis_rtos2::rtos_os_msg_queue_get(mq_id,
-                                                recv_buf.as_mut_ptr() as *mut cty::c_void,
-                                                null_mut(), 100);
+    let rc = cmsis_rtos2::rtos_os_msg_queue_get(
+      unsafe { GLOBAL_QUEUE_HANDLE.unwrap() },
+      recv_buf.as_mut_ptr() as *mut cty::c_void,
+      null_mut(), 250);
     if 0 == rc {
       toggle_leds();
-      cmsis_rtos2::rtos_os_delay(50);
+      UPDATE_COUNT.fetch_add(1, Ordering::Relaxed);
     }
+    else {
+      rprintln!("get fail: {}", rc);
+    }
+    cmsis_rtos2::rtos_os_delay(50);
 
   }
 
 }
 
+/// RTOS calls this function to run Task 3
+#[no_mangle]
+extern "C" fn task3_cb(_arg: *mut cty::c_void) {
+
+  loop {
+    let count_val = UPDATE_COUNT.load(Ordering::Relaxed);
+    rprintln!("count {}", count_val);
+    cmsis_rtos2::rtos_os_delay(1000);
+  }
+
+
+}
 
 
 
@@ -134,7 +161,7 @@ pub fn setup_default_threads() {
     null(),
   );
   if thread1_id.is_null() {
-    rprintln!("rtos_os_thread_new failed!");
+    rprintln!("rtos_os_thread1_new failed!");
     return;
   }
 
@@ -144,9 +171,33 @@ pub fn setup_default_threads() {
     null(),
   );
   if thread2_id.is_null() {
-    rprintln!("rtos_os_thread_new failed!");
+    rprintln!("rtos_os_thread2_new failed!");
     return;
   }
+
+
+  let attr = osThreadAttr_t {
+    name: null(),
+    attr_bits: 0,
+    cb_mem: null_mut(),
+    cb_size: 0,
+    stack_mem: null_mut(),
+    stack_size: 0,
+    priority: osPriority_t_osPriorityLow,
+    tz_module: 0,
+    reserved: 0
+  };
+  
+  let thread3_id = cmsis_rtos2::rtos_os_thread_new(
+    Some(task3_cb),
+    null_mut(),
+    &attr,
+  );
+  if thread3_id.is_null() {
+    rprintln!("rtos_os_thread3_new failed!");
+    return;
+  }
+
 }
 
 // Setup peripherals such as GPIO
@@ -160,7 +211,7 @@ fn setup_peripherals()  {
 
   // Set up the system clock at 16 MHz
   let rcc = dp.RCC.constrain();
-  let clocks = rcc.cfgr.freeze();
+  let _clocks = rcc.cfgr.freeze();
 //  let clocks = rcc.cfgr.sysclk(16.mhz()).freeze();
 
   //set initial states of user LEDs
@@ -168,7 +219,6 @@ fn setup_peripherals()  {
 
   //store shared peripherals
   interrupt::free(|cs| {
-    APP_CLOCKS.borrow(cs).replace(Some(clocks));
     USER_LED_1.borrow(cs).replace(Some(user_led1));
   });
 
