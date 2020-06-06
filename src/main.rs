@@ -3,7 +3,7 @@
 #![no_std]
 
 
-extern crate panic_semihosting;
+use panic_rtt_core::{self, rprintln, rtt_init_print};
 
 use core::cell::RefCell;
 use cortex_m::interrupt::{self, Mutex};
@@ -22,19 +22,7 @@ pub static SystemCoreClock: u32 = 16_000_000; //or use stm32f4xx_hal rcc::HSI
 //Can use 25_000_000 on an stm32f401 board with 25 MHz xtal
 // 48_000_000 for stm32h743 HSI (48 MHz)
 
-#[cfg(debug_assertions)]
-use cortex_m_log::{print, println};
 
-use cortex_m_log::{d_print, d_println};
-// FOR itm mode:
-//use cortex_m_log::{
-//  destination::Itm, printer::itm::InterruptSync as InterruptSyncItm,
-//};
-#[cfg(debug_assertions)]
-use cortex_m_log::printer::semihosting;
-
-#[cfg(debug_assertions)]
-use cortex_m_semihosting;
 
 
 use p_hal::rcc::Clocks;
@@ -49,27 +37,17 @@ use core::ptr::{null, null_mut};
 use cmsis_rtos2::{ osMessageQueueId_t};
 
 
-#[cfg(debug_assertions)]
-type DebugLog = cortex_m_log::printer::semihosting::Semihosting<cortex_m_log::modes::InterruptFree, cortex_m_semihosting::hio::HStdout>;
-
-//TODO this kind of hardcoding is not ergonomic
-
 type GpioTypeUserLed1 =  p_hal::gpio::gpioc::PC13<p_hal::gpio::Output<p_hal::gpio::PushPull>>;
 
 static APP_CLOCKS:  Mutex<RefCell< Option< Clocks >>> = Mutex::new(RefCell::new(None));
 static USER_LED_1:  Mutex<RefCell<Option< GpioTypeUserLed1>>> = Mutex::new(RefCell::new(None));
+static mut GLOBAL_QUEUE_HANDLE: Option< osMessageQueueId_t  > = None;
 
-lazy_static {}
-  static ref GLOBAL_QUEUE_HANDLE: AtomicPtr<osMessageQueueId_t> = AtomicPtr::default();
-  // static mut GLOBAL_QUEUE_HANDLE: Option< osMessageQueueId_t  > = None;
-}
+// lazy_static {}
+//   static ref GLOBAL_QUEUE_HANDLE: AtomicPtr<osMessageQueueId_t> = AtomicPtr::default();
+//   // static mut GLOBAL_QUEUE_HANDLE: Option< osMessageQueueId_t  > = None;
+// }
 
-// cortex-m-rt is setup to call DefaultHandler for a number of fault conditions
-// we can override this in debug mode for handy debugging
-#[exception]
-fn DefaultHandler(_irqn: i16) {
-  d_println!(get_debug_log(), "IRQn = {}", _irqn);
-}
 
 
 // cortex-m-rt calls this for serious faults.  can set a breakpoint to debug
@@ -82,13 +60,7 @@ fn HardFault(_ef: &ExceptionFrame) -> ! {
 
 #[no_mangle]
 extern "C" fn handle_assert_failed() {
-  d_println!(get_debug_log(), "handle_assert_failed");
-}
-
-/// Used in debug builds to provide a logging outlet
-#[cfg(debug_assertions)]
-fn get_debug_log() -> DebugLog {
-  semihosting::InterruptFree::<_>::stdout().unwrap()
+  rprintln!("handle_assert_failed");
 }
 
 
@@ -138,42 +110,15 @@ extern "C" fn task2_cb(_arg: *mut cty::c_void) {
 
 }
 
-#[no_mangle]
-extern "C" fn repeating_timer_task(_arg: *mut cty::c_void) {
-  toggle_leds();
-  //d_print!(get_debug_log(), ".");
-}
 
 
-pub fn setup_repeating_timer() {
-  let tid = cmsis_rtos2::rtos_os_timer_new(
-    Some(repeating_timer_task),
-    cmsis_rtos2::osTimerType_t_osTimerPeriodic,
-    null_mut(),
-    null(),
-  );
-
-  if tid.is_null() {
-    d_println!(get_debug_log(), "setup_repeating_timer failed...");
-  }
-  else {
-    let rc = cmsis_rtos2::rtos_os_timer_start(tid, 50);
-    if 0 != rc {
-      d_println!(get_debug_log(), "rtos_os_timer_start failed {:?}", rc);
-    }
-    else {
-      d_println!(get_debug_log(),"valid timer: {:?}", tid);
-    }
-  }
-
-}
 
 pub fn setup_default_threads() {
 
 // create a shared msg queue
   let mq = cmsis_rtos2::rtos_os_msg_queue_new(10, 4, null());
   if mq.is_null() {
-   d_println!(get_debug_log(), "rtos_os_msg_queue_new failed");
+   rprintln!("rtos_os_msg_queue_new failed");
    return;
   }
 
@@ -189,7 +134,7 @@ pub fn setup_default_threads() {
     null(),
   );
   if thread1_id.is_null() {
-    d_println!(get_debug_log(), "rtos_os_thread_new failed!");
+    rprintln!("rtos_os_thread_new failed!");
     return;
   }
 
@@ -199,14 +144,14 @@ pub fn setup_default_threads() {
     null(),
   );
   if thread2_id.is_null() {
-    d_println!(get_debug_log(), "rtos_os_thread_new failed!");
+    rprintln!("rtos_os_thread_new failed!");
     return;
   }
 }
 
 // Setup peripherals such as GPIO
 fn setup_peripherals()  {
-  //d_print!(get_debug_log(), "setup_peripherals...");
+  //rprintln!(, "setup_peripherals...");
 
   let dp = stm32::Peripherals::take().unwrap();
 
@@ -227,13 +172,13 @@ fn setup_peripherals()  {
     USER_LED_1.borrow(cs).replace(Some(user_led1));
   });
 
-  //d_println!(get_debug_log(), "done!");
+  //rprintln!(, "done!");
 
 }
 
 
 fn setup_rtos() {
-//  d_println!(get_debug_log(), "Setup RTOS...");
+//  rprintln!(, "Setup RTOS...");
 
   let _rc = cmsis_rtos2::rtos_kernel_initialize();
   let _tick_hz = cmsis_rtos2::rtos_kernel_get_tick_freq_hz();
@@ -249,7 +194,9 @@ fn setup_rtos() {
 
 #[entry]
 fn main() -> ! {
-
+  rtt_init_print!(NoBlockTrim);
+  rprintln!("-- > MAIN --");
+  
   setup_peripherals();
   setup_rtos();
 
@@ -257,7 +204,7 @@ fn main() -> ! {
     //cmsis_rtos2::rtos_os_thread_yield();
     //one hz heartbeat
     cmsis_rtos2::rtos_os_delay(1000);
-    d_print!(get_debug_log(),".");
+    rprintln!(".");
   }
 
 }
