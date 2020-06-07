@@ -3,10 +3,10 @@
 #![no_std]
 
 
-use panic_rtt_core::{self, rprintln, rtt_init_print};
+use panic_rtt_core::{self, rprint, rprintln, rtt_init_print};
 
-use core::cell::RefCell;
-use cortex_m::interrupt::{self, Mutex};
+// use core::cell::RefCell;
+// use cortex_m::interrupt::{self, Mutex};
 
 use stm32f4xx_hal as p_hal;
 
@@ -15,6 +15,8 @@ use cortex_m_rt::{entry, exception, ExceptionFrame};
 use p_hal::hal::digital::v2::ToggleableOutputPin;
 
 use freertos_sys::cmsis_rtos2;
+
+type MsgBufType = *const cty::c_void;
 
 #[allow(non_upper_case_globals)]
 #[no_mangle]
@@ -27,19 +29,24 @@ pub static SystemCoreClock: u32 = 16_000_000; //or use stm32f4xx_hal rcc::HSI
 use p_hal::gpio::GpioExt;
 use p_hal::rcc::RccExt;
 
-use core::ops::{DerefMut};
 use core::sync::atomic::{AtomicU32, Ordering, AtomicPtr};
 
 use p_hal::{prelude::*, stm32};
 use core::ptr::{null, null_mut};
-use cmsis_rtos2::{ osMessageQueueId_t, osThreadAttr_t, osPriority_t_osPriorityLow};
+use cmsis_rtos2::{
+  osMessageQueueId_t,
+  osThreadAttr_t,
+  osPriority_t_osPriorityLow,
+  osPriority_t_osPriorityAboveNormal
+};
 
 
 type GpioTypeUserLed1 =  p_hal::gpio::gpioc::PC13<p_hal::gpio::Output<p_hal::gpio::PushPull>>;
 
-static USER_LED_1:  Mutex<RefCell<Option< GpioTypeUserLed1>>> = Mutex::new(RefCell::new(None));
+// static USER_LED_1:  Mutex<RefCell<Option< GpioTypeUserLed1>>> = Mutex::new(RefCell::new(None));
 static GLOBAL_QUEUE_HANDLE: AtomicPtr<osMessageQueueId_t> =  AtomicPtr::new(core::ptr::null_mut());
 static UPDATE_COUNT: AtomicU32 = AtomicU32::new(0);
+static USER_LED1: AtomicPtr<GpioTypeUserLed1> =  AtomicPtr::new(core::ptr::null_mut());
 
 // cortex-m-rt calls this for serious faults.  can set a breakpoint to debug
 #[exception]
@@ -67,11 +74,11 @@ extern "C" fn handle_assert_failed() {
 
 // Toggle the user leds from their prior state
 fn toggle_leds() {
-  interrupt::free(|cs| {
-    if let Some(ref mut led1) = USER_LED_1.borrow(cs).borrow_mut().deref_mut() {
-      led1.toggle().unwrap();
-    }
-  });
+  unsafe {
+    USER_LED1.load(Ordering::Relaxed).as_mut().unwrap().toggle().unwrap();
+  }
+
+
 }
 
 /// RTOS calls this function to run Task 1
@@ -81,14 +88,14 @@ extern "C" fn task1_cb(_arg: *mut cty::c_void) {
   loop {
     let rc = cmsis_rtos2::rtos_os_msg_queue_put(
       GLOBAL_QUEUE_HANDLE.load(Ordering::Relaxed) as osMessageQueueId_t,
-      send_buf.as_ptr() as *const cty::c_void,
+      send_buf.as_ptr() as MsgBufType,
       1,
       250);
 
     if 0 != rc {
       rprintln!("qput failed: {}", rc);
     }
-    send_buf[0] =  send_buf[0].wrapping_add(1);
+    //send_buf[0] =  send_buf[0].wrapping_add(1);
     cmsis_rtos2::rtos_os_thread_yield();
   }
 
@@ -108,11 +115,7 @@ extern "C" fn task2_cb(_arg: *mut cty::c_void) {
       toggle_leds();
       UPDATE_COUNT.fetch_add(1, Ordering::Relaxed);
     }
-    else {
-      rprintln!("get fail: {}", rc);
-    }
-    cmsis_rtos2::rtos_os_delay(50);
-
+    cmsis_rtos2::rtos_os_thread_yield();
   }
 
 }
@@ -124,12 +127,10 @@ extern "C" fn task3_cb(_arg: *mut cty::c_void) {
   loop {
     let count_val = UPDATE_COUNT.load(Ordering::Relaxed);
     rprintln!("count {}", count_val);
-    cmsis_rtos2::rtos_os_delay(1000);
+    cmsis_rtos2::rtos_os_thread_yield();
   }
 
-
 }
-
 
 
 pub fn setup_default_threads() {
@@ -155,10 +156,23 @@ pub fn setup_default_threads() {
     return;
   }
 
+  // let thread2_attr = osThreadAttr_t {
+  //   name: null(),
+  //   attr_bits: 0,
+  //   cb_mem: null_mut(),
+  //   cb_size: 0,
+  //   stack_mem: null_mut(),
+  //   stack_size: 0,
+  //   priority: osPriority_t_osPriorityAboveNormal,
+  //   tz_module: 0,
+  //   reserved: 0
+  // };
+
   let thread2_id = cmsis_rtos2::rtos_os_thread_new(
     Some(task2_cb),
     null_mut(),
     null(),
+    // &thread2_attr,
   );
   if thread2_id.is_null() {
     rprintln!("rtos_os_thread2_new failed!");
@@ -166,7 +180,7 @@ pub fn setup_default_threads() {
   }
 
 
-  let attr = osThreadAttr_t {
+  let thread3_attr = osThreadAttr_t {
     name: null(),
     attr_bits: 0,
     cb_mem: null_mut(),
@@ -181,7 +195,7 @@ pub fn setup_default_threads() {
   let thread3_id = cmsis_rtos2::rtos_os_thread_new(
     Some(task3_cb),
     null_mut(),
-    &attr,
+    &thread3_attr,
   );
   if thread3_id.is_null() {
     rprintln!("rtos_os_thread3_new failed!");
@@ -192,7 +206,7 @@ pub fn setup_default_threads() {
 
 // Setup peripherals such as GPIO
 fn setup_peripherals()  {
-  //rprintln!(, "setup_peripherals...");
+  rprint!( "setup_peripherals...");
 
   let dp = stm32::Peripherals::take().unwrap();
 
@@ -208,11 +222,10 @@ fn setup_peripherals()  {
   user_led1.set_high().unwrap();
 
   //store shared peripherals
-  interrupt::free(|cs| {
-    USER_LED_1.borrow(cs).replace(Some(user_led1));
-  });
+  USER_LED1.store(&mut user_led1, Ordering::Relaxed);
 
-  //rprintln!(, "done!");
+
+  rprintln!("done!");
 
 }
 
