@@ -6,14 +6,14 @@ edition = "2018"
 
 
 [dependencies]
-#freertos-sys = {version="0.1.1", features=["stm32f4x"]}
-freertos-sys = {path="../freertos-sys", features=["stm32f4x","dbgsym"]}
+freertos-sys = {version="0.1.1", features=["stm32f4x","dbgsym"]}
+#freertos-sys = {path="../freertos-sys", features=["stm32f4x","dbgsym"]}
 cty = "0.2.1"
 cortex-m = "^0.6.0"
 cortex-m-rt = "0.6.11"
 panic-rtt-core = "0.1.1"
 embedded-hal = "0.2.3"
-
+#cortex-m-semihosting = "0.3.5"
 
 # Cortex-M family specialization:
 stm32f4 = {version = "0.9.0", features = ["stm32f401"] }
