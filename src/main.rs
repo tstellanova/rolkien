@@ -28,7 +28,7 @@ use p_hal::gpio::GpioExt;
 use p_hal::rcc::RccExt;
 
 use core::ops::{DerefMut};
-use core::sync::atomic::{AtomicU32, Ordering};
+use core::sync::atomic::{AtomicU32, Ordering, AtomicPtr};
 
 use p_hal::{prelude::*, stm32};
 use core::ptr::{null, null_mut};
@@ -38,15 +38,8 @@ use cmsis_rtos2::{ osMessageQueueId_t, osThreadAttr_t, osPriority_t_osPriorityLo
 type GpioTypeUserLed1 =  p_hal::gpio::gpioc::PC13<p_hal::gpio::Output<p_hal::gpio::PushPull>>;
 
 static USER_LED_1:  Mutex<RefCell<Option< GpioTypeUserLed1>>> = Mutex::new(RefCell::new(None));
-static mut GLOBAL_QUEUE_HANDLE: Option< osMessageQueueId_t  > = None;
+static GLOBAL_QUEUE_HANDLE: AtomicPtr<osMessageQueueId_t> =  AtomicPtr::new(core::ptr::null_mut());
 static UPDATE_COUNT: AtomicU32 = AtomicU32::new(0);
-
-// lazy_static {}
-//   static ref GLOBAL_QUEUE_HANDLE: AtomicPtr<osMessageQueueId_t> = AtomicPtr::default();
-//   // static mut GLOBAL_QUEUE_HANDLE: Option< osMessageQueueId_t  > = None;
-// }
-
-
 
 // cortex-m-rt calls this for serious faults.  can set a breakpoint to debug
 #[exception]
@@ -84,11 +77,10 @@ fn toggle_leds() {
 /// RTOS calls this function to run Task 1
 #[no_mangle]
 extern "C" fn task1_cb(_arg: *mut cty::c_void) {
-  let mq_id:osMessageQueueId_t = unsafe { GLOBAL_QUEUE_HANDLE.unwrap() } ;
   let mut send_buf: [u8; 10] = [0; 10];
   loop {
     let rc = cmsis_rtos2::rtos_os_msg_queue_put(
-      mq_id as osMessageQueueId_t,
+      GLOBAL_QUEUE_HANDLE.load(Ordering::Relaxed) as osMessageQueueId_t,
       send_buf.as_ptr() as *const cty::c_void,
       1,
       250);
@@ -109,7 +101,7 @@ extern "C" fn task2_cb(_arg: *mut cty::c_void) {
 
   loop {
     let rc = cmsis_rtos2::rtos_os_msg_queue_get(
-      unsafe { GLOBAL_QUEUE_HANDLE.unwrap() },
+      GLOBAL_QUEUE_HANDLE.load(Ordering::Relaxed) as osMessageQueueId_t,
       recv_buf.as_mut_ptr() as *mut cty::c_void,
       null_mut(), 250);
     if 0 == rc {
@@ -149,9 +141,7 @@ pub fn setup_default_threads() {
    return;
   }
 
-  unsafe {
-   GLOBAL_QUEUE_HANDLE = Some(mq);
-  }
+  GLOBAL_QUEUE_HANDLE.store(mq as *mut _, Ordering::Relaxed);
 
   // We don't pass context to the default task here, since that involves problematic
   // casting to/from C void pointers; instead, we use global static context.
