@@ -158,6 +158,8 @@ fn task2_done(rc: i32) {
 
 pub fn setup_threads() {
 
+  rprint!("setup_threads");
+
 // create a shared msg queue
   let mq = cmsis_rtos2::rtos_os_msg_queue_new(3, 4, null());
   if mq.is_null() {
@@ -188,6 +190,8 @@ pub fn setup_threads() {
     return;
   }
 
+
+  rprintln!("...done");
 
 }
 
@@ -230,7 +234,7 @@ fn setup_peripherals()  {
 
 
 fn start_rtos() -> ! {
-  rprintln!("Setup RTOS...");
+  rprintln!("setup rtos...");
 
   let _rc = cmsis_rtos2::rtos_kernel_initialize();
   let _tick_hz = cmsis_rtos2::rtos_kernel_get_tick_freq_hz();
@@ -248,7 +252,7 @@ fn start_rtos() -> ! {
 
 #[entry]
 fn main() -> ! {
-  rtt_init_print!(NoBlockSkip); //NoBlockTrim);
+  rtt_init_print!(NoBlockTrim);
   rprintln!("-- MAIN --");
   
   setup_peripherals();
