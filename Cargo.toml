@@ -6,7 +6,8 @@ edition = "2018"
 
 
 [dependencies]
-freertos-sys = {version="0.1.1", features=["stm32f4x"]}
+#freertos-sys = {version="0.1.1", features=["stm32f4x"]}
+freertos-sys = {path="../freertos-sys", features=["stm32f4x","dbgsym"]}
 cty = "0.2.1"
 cortex-m = "^0.6.0"
 cortex-m-rt = "0.6.11"

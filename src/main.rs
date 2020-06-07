@@ -83,8 +83,9 @@ fn toggle_leds() {
 
 fn task1_body(send_val: u8) -> i32 {
   let send_buf:[u8; 4] = [send_val, 0, 0, 0];
+  let mq = GLOBAL_QUEUE_HANDLE.load(Ordering::Relaxed) as osMessageQueueId_t;
   let rc = cmsis_rtos2::rtos_os_msg_queue_put(
-    GLOBAL_QUEUE_HANDLE.load(Ordering::Relaxed) as osMessageQueueId_t,
+    mq,
     send_buf.as_ptr() as MsgBufType,
     1,
     250);
@@ -95,6 +96,8 @@ fn task1_body(send_val: u8) -> i32 {
 /// RTOS calls this function to run Task 1
 #[no_mangle]
 extern "C" fn task1_start(_arg: *mut cty::c_void) {
+  // rprintln!("task1_start...");
+
   let mut send_val = 0;
   let exit_rc = loop {
     let rc = task1_body(send_val);
@@ -122,7 +125,7 @@ fn task2_body() -> i32 {
     null_mut(), 250);
   if 0 == rc {
     toggle_leds();
-    UPDATE_COUNT.fetch_add(2, Ordering::SeqCst);
+    UPDATE_COUNT.fetch_add(1, Ordering::SeqCst);
   }
 
   rc
@@ -131,13 +134,16 @@ fn task2_body() -> i32 {
 /// RTOS calls this function to run Task 2
 #[no_mangle]
 extern "C" fn task2_start(_arg: *mut cty::c_void) {
+
+  // rprintln!("task2_start...");
+
   let exit_rc = loop {
     let rc = task2_body();
+    cmsis_rtos2::rtos_os_thread_yield();
+
     if 0 != rc {
       break rc;
     }
-
-    //cmsis_rtos2::rtos_os_delay(50);
   };
 
   task2_done(exit_rc)
@@ -148,19 +154,6 @@ fn task2_done(rc: i32) {
   rprintln!("task2 exit: {}", rc);
 }
 
-fn task3_body() {
-  let count_val = UPDATE_COUNT.load(Ordering::SeqCst);
-  rprintln!("count {}", count_val);
-}
-
-/// RTOS calls this function to run Task 3
-#[no_mangle]
-extern "C" fn task3_start(_arg: *mut cty::c_void) {
-  loop {
-    task3_body();
-    cmsis_rtos2::rtos_os_delay(50);
-  }
-}
 
 
 pub fn setup_threads() {
@@ -195,16 +188,6 @@ pub fn setup_threads() {
     return;
   }
 
-  // let thread3_attr = thread_attr_with_priority(osPriority_t_osPriorityLow);
-  // let thread3_id = cmsis_rtos2::rtos_os_thread_new(
-  //   Some(task3_start),
-  //   null_mut(),
-  //   &thread3_attr,
-  // );
-  // if thread3_id.is_null() {
-  //   rprintln!("rtos_os_thread3_new failed!");
-  //   return;
-  // }
 
 }
 
@@ -235,7 +218,6 @@ fn setup_peripherals()  {
   // Set up the system clock at 16 MHz
   let rcc = dp.RCC.constrain();
   let _clocks = rcc.cfgr.freeze();
-//  let clocks = rcc.cfgr.sysclk(16.mhz()).freeze();
 
   //set initial states of user LEDs
   user_led1.set_high().unwrap();
@@ -266,7 +248,7 @@ fn start_rtos() -> ! {
 
 #[entry]
 fn main() -> ! {
-  rtt_init_print!(NoBlockTrim);
+  rtt_init_print!(NoBlockSkip); //NoBlockTrim);
   rprintln!("-- MAIN --");
   
   setup_peripherals();
