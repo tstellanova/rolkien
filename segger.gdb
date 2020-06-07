@@ -27,8 +27,14 @@ monitor semihosting enable
 load
 
 b HardFault
-break handle_assert_failed
-#break rust_begin_unwind
+b handle_assert_failed
+#b rust_begin_unwind
+# b task1_done
+# b task2_done
+# b task3_body
+# b task2_body
+# b task1_body
+
 run
 
 #stepi
