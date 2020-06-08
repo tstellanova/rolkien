@@ -20,18 +20,14 @@ type MsgBufType = *const cty::c_void;
 
 #[allow(non_upper_case_globals)]
 #[no_mangle]
-pub static SystemCoreClock: u32 = 16_000_000; //or use stm32f4xx_hal rcc::HSI
+pub static SystemCoreClock: u32 = 25_000_000;
 //Can use 25_000_000 on an stm32f401 board with 25 MHz xtal
-// 48_000_000 for stm32h743 HSI (48 MHz)
 
-
-
-use p_hal::gpio::GpioExt;
-use p_hal::rcc::RccExt;
 
 use core::sync::atomic::{AtomicUsize, Ordering, AtomicPtr};
 
-use p_hal::{prelude::*, stm32};
+
+use p_hal::{prelude::*};
 use core::ptr::{null, null_mut};
 use cmsis_rtos2::{
   osMessageQueueId_t,
@@ -42,20 +38,18 @@ use cmsis_rtos2::{
   osPriority_t_osPriorityNormal1,
   osPriority_t_osPriorityNormal2
 };
+use stm32f401ccu6_bsp::peripherals::{self, UserLed1Type};
 
-type GpioTypeUserLed1 =  p_hal::gpio::gpioc::PC13<p_hal::gpio::Output<p_hal::gpio::PushPull>>;
 
-// static USER_LED_1:  Mutex<RefCell<Option< GpioTypeUserLed1>>> = Mutex::new(RefCell::new(None));
-static GLOBAL_QUEUE_HANDLE: AtomicPtr<osMessageQueueId_t> =  AtomicPtr::new(core::ptr::null_mut());
+static GLOBAL_QUEUE_HANDLE: AtomicPtr<osMessageQueueId_t> = AtomicPtr::new(core::ptr::null_mut());
 static UPDATE_COUNT: AtomicUsize = AtomicUsize::new(0);
-static USER_LED1: AtomicPtr<GpioTypeUserLed1> =  AtomicPtr::new(core::ptr::null_mut());
+static USER_LED1: AtomicPtr<UserLed1Type> =  AtomicPtr::new(core::ptr::null_mut());
 
 // cortex-m-rt calls this for serious faults.  can set a breakpoint to debug
 #[exception]
 fn HardFault(_ef: &ExceptionFrame) -> ! {
   rprintln!("HardFault");
   loop {
-    cortex_m::asm::bkpt();
   }
 }
 
@@ -63,24 +57,23 @@ fn HardFault(_ef: &ExceptionFrame) -> ! {
 fn DefaultHandler(val: i16) -> ! {
   rprintln!("DefaultHandler {}", val);
   loop {
-    //cortex_m::asm::bkpt();
   }
 }
 
+/// Called when FreeRTOS assert fails
 #[no_mangle]
 extern "C" fn handle_assert_failed() {
   rprintln!("handle_assert_failed");
 }
 
-
-
-// Toggle the user leds from their prior state
+/// Toggle the user leds from their prior state
 fn toggle_leds() {
   unsafe {
     USER_LED1.load(Ordering::Relaxed).as_mut().unwrap().toggle().unwrap();
   }
 }
 
+/// main body of Task 1
 fn task1_body(send_val: u8) -> i32 {
   let send_buf:[u8; 4] = [send_val, 0, 0, 0];
   let mq = GLOBAL_QUEUE_HANDLE.load(Ordering::Relaxed) as osMessageQueueId_t;
@@ -93,30 +86,21 @@ fn task1_body(send_val: u8) -> i32 {
   rc
 }
 
-/// RTOS calls this function to run Task 1
+/// RTOS calls this function to start Task 1
 #[no_mangle]
 extern "C" fn task1_start(_arg: *mut cty::c_void) {
-  // rprintln!("task1_start...");
 
   let mut send_val = 0;
-  let exit_rc = loop {
-    let rc = task1_body(send_val);
+  loop {
+    let _ = task1_body(send_val);
     send_val = send_val.wrapping_add(1);
-    if rc != 0 {
-      break rc;
-    }
     cmsis_rtos2::rtos_os_thread_yield();
   };
 
-  task1_done(exit_rc)
-
 }
 
-#[inline(never)]
-fn task1_done(rc: i32) {
-  rprintln!("task1 exit: {}", rc);
-}
 
+/// main body of Task 2
 fn task2_body() -> i32 {
   let mut recv_buf: [u8; 4] = [0; 4];
   let rc = cmsis_rtos2::rtos_os_msg_queue_get(
@@ -135,27 +119,18 @@ fn task2_body() -> i32 {
 #[no_mangle]
 extern "C" fn task2_start(_arg: *mut cty::c_void) {
 
-  // rprintln!("task2_start...");
-
-  let exit_rc = loop {
-    let rc = task2_body();
-    cmsis_rtos2::rtos_os_thread_yield();
-
-    if 0 != rc {
-      break rc;
-    }
+  loop {
+    let _ = task2_body();
+    // cmsis_rtos2::rtos_os_thread_yield();
+    //this delay is not necessary, but it makes the LED blinking more perceptible
+    cmsis_rtos2::rtos_os_delay(50);
   };
 
-  task2_done(exit_rc)
-}
-
-#[inline(never)]
-fn task2_done(rc: i32) {
-  rprintln!("task2 exit: {}", rc);
 }
 
 
 
+/// Setup all the threads that will run
 pub fn setup_threads() {
 
   rprint!("setup_threads");
@@ -196,6 +171,7 @@ pub fn setup_threads() {
 }
 
 
+/// Convenience function for creating thread attributes
 fn thread_attr_with_priority(priority: osPriority_t) -> osThreadAttr_t {
   osThreadAttr_t {
     name: null(),
@@ -210,18 +186,16 @@ fn thread_attr_with_priority(priority: osPriority_t) -> osThreadAttr_t {
   }
 }
 
-// Setup peripherals such as GPIO
+/// Setup peripherals
 fn setup_peripherals()  {
   rprint!( "setup_peripherals...");
 
-  let dp = stm32::Peripherals::take().unwrap();
-
-  let gpioc = dp.GPIOC.split();
-  let mut user_led1 = gpioc.pc13.into_push_pull_output();
-
-  // Set up the system clock at 16 MHz
-  let rcc = dp.RCC.constrain();
-  let _clocks = rcc.cfgr.freeze();
+  let (mut user_led1,
+    _delay_source,
+    _i2c1_port,
+    _spi1_port,
+    _spi_csn) =
+      peripherals::setup_peripherals();
 
   //set initial states of user LEDs
   user_led1.set_high().unwrap();
@@ -244,8 +218,8 @@ fn start_rtos() -> ! {
   setup_threads();
 
   // this should never return:
-  let _rc = cmsis_rtos2::rtos_kernel_start();
-  rprintln!("kernel exit: {}", _rc);
+  let rc = cmsis_rtos2::rtos_kernel_start();
+  rprintln!("kernel exit: {}", rc);
 
   unreachable!()
 }

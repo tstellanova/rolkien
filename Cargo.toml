@@ -6,18 +6,22 @@ edition = "2018"
 
 
 [dependencies]
-freertos-sys = {version="0.1.1", features=["stm32f4x","dbgsym"]}
+freertos-sys = {version="0.1.3", features=["stm32f4x","dbgsym"]}
 #freertos-sys = {path="../freertos-sys", features=["stm32f4x","dbgsym"]}
 cty = "0.2.1"
 cortex-m = "^0.6.0"
 cortex-m-rt = "0.6.11"
 panic-rtt-core = "0.1.1"
 embedded-hal = "0.2.3"
-#cortex-m-semihosting = "0.3.5"
 
 # Cortex-M family specialization:
 stm32f4 = {version = "0.9.0", features = ["stm32f401"] }
 stm32f4xx-hal = { version =" 0.6.0", features = ["stm32f401", "rt"] }
+#stm32f401ccu6-bsp = {git= "https://github.com/tstellanova/stm32f401ccu6-bsp"}
+#stm32f401ccu6-bsp = {path="../stm32f401ccu6-bsp"}
+stm32f401ccu6-bsp = "0.1.0"
+
+
 
 [profile.dev]
 codegen-units = 1 # better optimizations
